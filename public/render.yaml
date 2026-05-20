@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: ab-exterior-solutions
+    runtime: python
+    plan: starter
+    buildCommand: "python -m py_compile server.py"
+    startCommand: "python server.py"
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.13
+      - key: DATA_DIR
+        value: /var/data
+      - key: ADMIN_USER
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: BOOKING_WEBHOOK_URL
+        sync: false
+      - key: BOOKING_WEBHOOK_SECRET
+        sync: false
+      - key: BUSINESS_NOTIFICATION_EMAIL
+        sync: false
+      - key: BOOKING_TIMEZONE
+        value: America/New_York
+      - key: DEFAULT_EVENT_DURATION_MINUTES
+        value: "120"
+      - key: BOOKING_BLOCK_MINUTES
+        value: "120"
+    disk:
+      name: ab-exterior-data
+      mountPath: /var/data
+      sizeGB: 1
