@@ -1,8 +1,8 @@
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
-import datetime as dt
+from urllib.parse import urlparse
 import base64
+import datetime as dt
 import hashlib
 import hmac
 import json
@@ -12,7 +12,6 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
-
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PUBLIC_DIR = os.path.join(ROOT, "public")
@@ -27,10 +26,9 @@ def load_env_file():
     with open(path, "r", encoding="utf-8") as file:
         for raw_line in file:
             line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 load_env_file()
@@ -40,64 +38,15 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-before-deployment")
 BOOKING_WEBHOOK_URL = os.environ.get("BOOKING_WEBHOOK_URL", "")
 BOOKING_WEBHOOK_SECRET = os.environ.get("BOOKING_WEBHOOK_SECRET", "")
-BUSINESS_NOTIFICATION_EMAIL = os.environ.get("BUSINESS_NOTIFICATION_EMAIL", "info@abexteriorsolutions.com")
+BUSINESS_NOTIFICATION_EMAIL = os.environ.get("BUSINESS_NOTIFICATION_EMAIL", "austin@abexteriorsolutions.com")
 BOOKING_TIMEZONE = os.environ.get("BOOKING_TIMEZONE", "America/New_York")
 DEFAULT_EVENT_DURATION_MINUTES = int(os.environ.get("DEFAULT_EVENT_DURATION_MINUTES", "120"))
 BOOKING_BLOCK_MINUTES = int(os.environ.get("BOOKING_BLOCK_MINUTES", str(DEFAULT_EVENT_DURATION_MINUTES)))
 ALLOWED_BOOKING_TIMES = {"8:00 AM", "10:00 AM", "12:00 PM", "2:00 PM", "4:00 PM"}
 
 
-def parse_booking_start(value):
-    text = clean(value)
-    try:
-        date_part, time_part = text.split(" ", 1)
-        selected_date = dt.datetime.strptime(date_part, "%Y-%m-%d").date()
-    except ValueError:
-        return None
-
-    if time_part not in ALLOWED_BOOKING_TIMES:
-        return None
-
-    try:
-        selected_time = dt.datetime.strptime(time_part, "%I:%M %p").time()
-    except ValueError:
-        return None
-
-    return dt.datetime.combine(selected_date, selected_time)
-
-
-def booking_time_is_available(preferred_time):
-    requested = parse_booking_start(preferred_time)
-    if not requested:
-        return False, "Please choose one of the available appointment times."
-
-    today = dt.datetime.now().date()
-    if requested.date() < today:
-        return False, "Please choose a future appointment date."
-
-    if requested.weekday() == 6:
-        return False, "Online booking is available Monday through Saturday. Please choose another day."
-    if requested.weekday() == 5 and requested.time() == dt.time(16, 0):
-        return False, "Saturday online appointments are available from 8:00 AM to 4:00 PM. Please choose an earlier Saturday slot."
-
-    requested_end = requested + dt.timedelta(minutes=BOOKING_BLOCK_MINUTES)
-    with db() as con:
-        rows = con.execute(
-            """
-            SELECT preferred_time FROM bookings
-            WHERE status IN ('Pending', 'Confirmed')
-            """
-        ).fetchall()
-
-    for row in rows:
-        existing = parse_booking_start(row["preferred_time"])
-        if not existing:
-            continue
-        existing_end = existing + dt.timedelta(minutes=BOOKING_BLOCK_MINUTES)
-        if requested < existing_end and requested_end > existing:
-            return False, "That appointment time is already booked. Please choose another two-hour slot."
-
-    return True, ""
+def clean(value):
+    return str(value or "").strip()
 
 
 def db():
@@ -109,8 +58,7 @@ def db():
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with db() as con:
-        con.execute(
-            """
+        con.execute("""
             CREATE TABLE IF NOT EXISTS bookings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -123,10 +71,8 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'Pending',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
-        con.execute(
-            """
+        """)
+        con.execute("""
             CREATE TABLE IF NOT EXISTS reviews (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -136,8 +82,7 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'Pending',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
+        """)
 
 
 def read_json(handler):
@@ -151,13 +96,48 @@ def send_json(handler, payload, status=HTTPStatus.OK):
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
 
 
-def clean(value):
-    return str(value or "").strip()
+def parse_booking_start(value):
+    text = clean(value)
+    try:
+        date_part, time_part = text.split(" ", 1)
+        selected_date = dt.datetime.strptime(date_part, "%Y-%m-%d").date()
+        selected_time = dt.datetime.strptime(time_part, "%I:%M %p").time()
+    except ValueError:
+        return None
+    if time_part not in ALLOWED_BOOKING_TIMES:
+        return None
+    return dt.datetime.combine(selected_date, selected_time)
+
+
+def booking_time_is_available(preferred_time):
+    requested = parse_booking_start(preferred_time)
+    if not requested:
+        return False, "Please choose one of the available appointment times."
+    if requested.date() < dt.datetime.now().date():
+        return False, "Please choose a future appointment date."
+    if requested.weekday() == 6:
+        return False, "Online booking is available Monday through Saturday. Please choose another day."
+    if requested.weekday() == 5 and requested.time() == dt.time(16, 0):
+        return False, "Saturday online appointments are available from 8:00 AM to 4:00 PM. Please choose an earlier Saturday slot."
+
+    requested_end = requested + dt.timedelta(minutes=BOOKING_BLOCK_MINUTES)
+    with db() as con:
+        rows = con.execute("SELECT preferred_time FROM bookings WHERE status IN ('Pending', 'Confirmed')").fetchall()
+    for row in rows:
+        existing = parse_booking_start(row["preferred_time"])
+        if not existing:
+            continue
+        existing_end = existing + dt.timedelta(minutes=BOOKING_BLOCK_MINUTES)
+        if requested < existing_end and requested_end > existing:
+            return False, "That appointment time is already booked. Please choose another two-hour slot."
+    return True, ""
 
 
 def booking_payload(booking_id, fields):
@@ -176,5 +156,213 @@ def booking_payload(booking_id, fields):
 def notify_booking(booking_id, fields):
     if not BOOKING_WEBHOOK_URL:
         return {"enabled": False, "ok": False}
+    body = json.dumps(booking_payload(booking_id, fields)).encode("utf-8")
+    request = urllib.request.Request(
+        BOOKING_WEBHOOK_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            raw = response.read().decode("utf-8")
+            payload = json.loads(raw or "{}")
+        return {"enabled": True, "ok": bool(payload.get("ok", True)), "response": payload}
+    except urllib.error.HTTPError as error:
+        try:
+            payload = json.loads(error.read().decode("utf-8") or "{}")
+        except Exception:
+            payload = {"error": str(error)}
+        return {"enabled": True, "ok": False, "response": payload}
+    except Exception as error:
+        return {"enabled": True, "ok": False, "response": {"error": str(error)}}
 
-    body = json.dumps(booking_payload(booking_id, fields)).encode(""utf-8"")
+
+def make_token():
+    expires = int(time.time()) + 60 * 60 * 8
+    nonce = secrets.token_hex(12)
+    payload = f"{ADMIN_USER}:{expires}:{nonce}"
+    sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}:{sig}".encode()).decode()
+
+
+def check_token(token):
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode()).decode()
+        user, expires, nonce, sig = decoded.rsplit(":", 3)
+        payload = f"{user}:{expires}:{nonce}"
+        expected = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        return user == ADMIN_USER and int(expires) > time.time() and hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
+def cookie_value(header, name):
+    for part in (header or "").split(";"):
+        if "=" in part:
+            key, value = part.strip().split("=", 1)
+            if key == name:
+                return value
+    return ""
+
+
+def send_json_with_cookie(handler, payload, cookie):
+    body = json.dumps(payload).encode("utf-8")
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Set-Cookie", cookie)
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+class Handler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=PUBLIC_DIR, **kwargs)
+
+    def is_admin(self):
+        return check_token(cookie_value(self.headers.get("Cookie"), "ab_admin"))
+
+    def require_admin(self):
+        if self.is_admin():
+            return True
+        send_json(self, {"error": "Admin login required."}, HTTPStatus.UNAUTHORIZED)
+        return False
+
+    def do_OPTIONS(self):
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path == "/api/health":
+            send_json(self, {"ok": True})
+        elif path == "/api/reviews":
+            with db() as con:
+                rows = con.execute("SELECT id, name, rating, review, service, created_at FROM reviews WHERE status = 'Approved' ORDER BY created_at DESC").fetchall()
+            send_json(self, {"reviews": [dict(row) for row in rows]})
+        elif path == "/api/admin/session":
+            send_json(self, {"authenticated": self.is_admin()})
+        elif path == "/api/admin/bookings":
+            if not self.require_admin():
+                return
+            with db() as con:
+                rows = con.execute("SELECT * FROM bookings ORDER BY created_at DESC").fetchall()
+            send_json(self, {"bookings": [dict(row) for row in rows]})
+        elif path == "/api/admin/reviews":
+            if not self.require_admin():
+                return
+            with db() as con:
+                rows = con.execute("SELECT * FROM reviews ORDER BY created_at DESC").fetchall()
+            send_json(self, {"reviews": [dict(row) for row in rows]})
+        else:
+            super().do_GET()
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        data = read_json(self)
+        if path == "/api/bookings":
+            fields = {
+                "name": clean(data.get("name")),
+                "phone": clean(data.get("phone")),
+                "email": clean(data.get("email")),
+                "address": clean(data.get("address")),
+                "service": clean(data.get("service")),
+                "preferred_time": clean(data.get("preferred_time")),
+                "message": clean(data.get("message")),
+            }
+            missing = [key for key in ["name", "phone", "email", "address", "service", "preferred_time"] if not fields[key]]
+            if missing:
+                send_json(self, {"error": "Please complete all required booking fields."}, HTTPStatus.BAD_REQUEST)
+                return
+            available, error_message = booking_time_is_available(fields["preferred_time"])
+            if not available:
+                send_json(self, {"error": error_message}, HTTPStatus.CONFLICT)
+                return
+            with db() as con:
+                cur = con.execute("""
+                    INSERT INTO bookings (name, phone, email, address, service, preferred_time, message)
+                    VALUES (:name, :phone, :email, :address, :service, :preferred_time, :message)
+                """, fields)
+                booking_id = cur.lastrowid
+            notification = notify_booking(booking_id, fields)
+            if notification["enabled"] and not notification["ok"] and (notification.get("response") or {}).get("error") == "Calendar slot unavailable":
+                with db() as con:
+                    con.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
+                send_json(self, {"error": "That calendar slot was just booked. Please choose another two-hour appointment time."}, HTTPStatus.CONFLICT)
+                return
+            message = "Your request is saved. AB Exterior Solutions will confirm your appointment soon."
+            if notification["enabled"] and notification["ok"]:
+                message = "Your appointment request is saved and added to the AB Exterior Solutions calendar. We'll confirm the job details soon."
+            send_json(self, {"ok": True, "booking_id": booking_id, "calendar_sync": notification, "message": message}, HTTPStatus.CREATED)
+        elif path == "/api/reviews":
+            rating = int(data.get("rating") or 0)
+            fields = {
+                "name": clean(data.get("name")),
+                "rating": rating,
+                "review": clean(data.get("review")),
+                "service": clean(data.get("service")),
+            }
+            if not fields["name"] or not fields["review"] or rating < 1 or rating > 5:
+                send_json(self, {"error": "Please add your name, rating, and review."}, HTTPStatus.BAD_REQUEST)
+                return
+            with db() as con:
+                con.execute("INSERT INTO reviews (name, rating, review, service) VALUES (:name, :rating, :review, :service)", fields)
+            send_json(self, {"ok": True, "message": "Thanks. Your review is pending approval."}, HTTPStatus.CREATED)
+        elif path == "/api/admin/login":
+            if clean(data.get("username")) == ADMIN_USER and hmac.compare_digest(clean(data.get("password")), ADMIN_PASSWORD):
+                send_json_with_cookie(self, {"ok": True}, f"ab_admin={make_token()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800")
+            else:
+                send_json(self, {"error": "Invalid admin login."}, HTTPStatus.UNAUTHORIZED)
+        elif path == "/api/admin/logout":
+            send_json_with_cookie(self, {"ok": True}, "ab_admin=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+        else:
+            send_json(self, {"error": "Not found."}, HTTPStatus.NOT_FOUND)
+
+    def do_PATCH(self):
+        if not self.require_admin():
+            return
+        parts = urlparse(self.path).path.strip("/").split("/")
+        data = read_json(self)
+        if parts[:3] == ["api", "admin", "bookings"] and len(parts) == 4:
+            status = clean(data.get("status"))
+            if status not in ["Pending", "Confirmed", "Completed", "Canceled"]:
+                send_json(self, {"error": "Invalid booking status."}, HTTPStatus.BAD_REQUEST)
+                return
+            with db() as con:
+                con.execute("UPDATE bookings SET status = ? WHERE id = ?", (status, parts[3]))
+            send_json(self, {"ok": True})
+        elif parts[:3] == ["api", "admin", "reviews"] and len(parts) == 4:
+            status = clean(data.get("status"))
+            if status not in ["Pending", "Approved", "Hidden"]:
+                send_json(self, {"error": "Invalid review status."}, HTTPStatus.BAD_REQUEST)
+                return
+            with db() as con:
+                con.execute("UPDATE reviews SET status = ? WHERE id = ?", (status, parts[3]))
+            send_json(self, {"ok": True})
+        else:
+            send_json(self, {"error": "Not found."}, HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self):
+        if not self.require_admin():
+            return
+        parts = urlparse(self.path).path.strip("/").split("/")
+        if parts[:3] == ["api", "admin", "reviews"] and len(parts) == 4:
+            with db() as con:
+                con.execute("DELETE FROM reviews WHERE id = ?", (parts[3],))
+            send_json(self, {"ok": True})
+        else:
+            send_json(self, {"error": "Not found."}, HTTPStatus.NOT_FOUND)
+
+
+if __name__ == "__main__":
+    init_db()
+    port = int(os.environ.get("PORT", "8000"))
+    host = os.environ.get("HOST", "0.0.0.0")
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"AB Exterior Solutions running at http://{host}:{port}")
+    server.serve_forever()
